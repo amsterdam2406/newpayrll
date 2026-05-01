@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 from .serializers import UserSerializer
 from .throttles import LoginThrottle
 import re
+from .models import Notification  
 
 
 logger = logging.getLogger(__name__)
@@ -326,7 +327,7 @@ def verify_password(request):
 
     # NEW: Endpoint to get next employee ID for preview
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def get_next_employee_id(request):
     """Get next auto-generated employee ID for preview (does NOT reserve it)"""
     employee_type = request.query_params.get('type', 'staff')
@@ -351,3 +352,48 @@ def get_next_employee_id(request):
         'sequence': next_sequence,
         'note': 'This is a preview. Actual ID assigned on creation.'
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """Change user password with confirmation and superuser notification"""
+    user = request.user
+    old_password = request.data.get('old_password')
+    new_password = request.data.get('new_password')
+    confirm_password = request.data.get('confirm_password')
+    
+    if not old_password or not new_password or not confirm_password:
+        return Response({'error': 'All password fields are required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if new_password != confirm_password:
+        return Response({'error': 'New passwords do not match'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if not user.check_password(old_password):
+        return Response({'error': 'Current password is incorrect'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validate new password strength
+    from django.contrib.auth.password_validation import validate_password
+    try:
+        validate_password(new_password, user)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Change password
+    user.set_password(new_password)
+    user.save()
+    
+    # Notify superuser
+    superusers = User.objects.filter(is_superuser=True)
+    for superuser in superusers:
+        Notification.objects.create(
+            user=superuser,
+            title='Password Changed',
+            message=f'User {user.username} ({user.get_full_name() or user.email}) changed their password.',
+            notification_type='security'
+        )
+    
+    # Log the change
+    logger.info(f"Password changed for user {user.username} by {request.user.username}")
+    
+    return Response({'message': 'Password changed successfully'}, status=status.HTTP_200_OK)

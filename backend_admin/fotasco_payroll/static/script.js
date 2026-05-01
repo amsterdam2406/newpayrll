@@ -241,7 +241,8 @@ async function apiRequest(url, options = {}) {
         headers,
         body: options.body instanceof FormData 
             ? options.body 
-            : (options.body ? JSON.stringify(options.body) : null)
+            : (options.body ? JSON.stringify(options.body) : null),
+        signal: options.signal // Add abort signal support
     };
 
     try {
@@ -425,13 +426,20 @@ function setupBankVerification() {
         }
         
         try {
+            // Add 20-second timeout for account verification
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 seconds
+            
             const res = await apiRequest('/api/paystack/verify-account/', {
                 method: 'POST',
                 body: {
                     account_number: accountNumber,
                     bank_code: bankCode
-                }
+                },
+                signal: controller.signal // Pass the abort signal
             });
+            
+            clearTimeout(timeoutId); // Clear timeout if request completes
             
             // FIXED: Check Paystack response format properly
             if (res.success && res.data?.status === true && res.data?.data?.account_name) {
@@ -460,16 +468,30 @@ function setupBankVerification() {
             holderInput.value = '';
             holderInput.readOnly = false;
             AppState.lastVerifiedAccountKey = null;
-            if (statusEl) {
-                statusEl.textContent = 'Verification service unavailable. Enter name manually.';
-                statusEl.className = 'text-warning';
+            if (err.name === 'AbortError') {
+                if (statusEl) {
+                    statusEl.textContent = 'Verification timed out due to slow connection. Please try again.';
+                    statusEl.className = 'text-warning';
+                }
+                showToast('Verification timed out. Check your connection and try again.', 'warning');
+            } else if (err.status === 429) {
+                if (statusEl) {
+                    statusEl.textContent = 'Too many requests. Please wait a moment and try again.';
+                    statusEl.className = 'text-warning';
+                }
+                showToast('Account verification rate limited. Please wait before trying again.', 'warning');
+            } else {
+                if (statusEl) {
+                    statusEl.textContent = 'Verification service unavailable. Enter name manually.';
+                    statusEl.className = 'text-warning';
+                }
             }
         } finally {
             AppState.pendingAccountVerificationKey = null;
             holderInput.disabled = false;
             holderInput.placeholder = 'Account Holder Name';
         }
-    }, 800);
+    }, 100); // Reduced debounce to 100ms for near-instant response
 
     accountInput.addEventListener('input', verifyCurrentAccount);
     bankSelect.addEventListener('change', () => {
@@ -477,7 +499,7 @@ function setupBankVerification() {
         holderInput.value = '';
         holderInput.style.background = '';
         if (statusEl) {
-            statusEl.textContent = 'Enter account number and leave field to auto-verify';
+            statusEl.textContent = 'Enter 10-digit account number to auto-verify';
             statusEl.className = 'text-muted';
         }
         if (accountInput.value.trim().length === 10) {

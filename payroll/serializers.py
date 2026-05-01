@@ -76,7 +76,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'salary', 'phone', 'email', 'bank_name', 'account_number',
             'account_holder', 'status', 'join_date', 'id_sequence', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['employee_id', 'id_sequence', 'created_at', 'updated_at', 'id']
+        read_only_fields = ['id_sequence', 'created_at', 'updated_at', 'id']
     
     def validate_name(self, value):
         if not value or not value.strip():
@@ -86,6 +86,21 @@ class EmployeeSerializer(serializers.ModelSerializer):
     def validate_salary(self, value):
         if value < 0:
             raise serializers.ValidationError("Salary cannot be negative")
+        return value
+    
+    def validate_employee_id(self, value):
+        if not value:
+            return value  # Allow empty, model will generate
+        # Check format: FSS-XXX-TYPE
+        import re
+        if not re.match(r'^FSS-\d{3}-(STAFF|GRD|EMP)$', value):
+            raise serializers.ValidationError("Employee ID must be in format FSS-XXX-TYPE")
+        # Check uniqueness
+        queryset = Employee.objects.filter(employee_id=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("This employee ID is already in use")
         return value
         
     def validate_account_number(self, value):

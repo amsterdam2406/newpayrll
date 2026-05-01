@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # 'sslserver',  # Added for HTTPS development support
     
     # Third-party apps
     'rest_framework',
@@ -137,6 +138,7 @@ if DATABASE_URL:
         'default': dj_database_url.config(
             default=DATABASE_URL,
             conn_max_age=600,
+            conn_health_checks=True,
         )
     }
 else:
@@ -215,9 +217,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
 }
-##remove later testing only
-if 'test' in sys.argv:
-    REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = []
+# ##remove later testing only
+# if 'test' in sys.argv:
+#     REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = []
 # JWT Settings
 
 
@@ -232,10 +234,12 @@ SIMPLE_JWT = {
 
 # CORS Settings REMOVIN all LATER
 CORS_ALLOWED_ORIGINS = [
-    "https://localhost:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "https://localhost:8000",
     "https://127.0.0.1:8000",
-    "https://127.0.0.1:3000",
-    "https://localhost:5173",
     "https://fot-pyroll.onrender.com",
 ]
 
@@ -277,7 +281,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Production Security Settings
 # Set these to True in production environment
-SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
 SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=True, cast=bool)
 SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=True, cast=bool)
@@ -288,8 +292,8 @@ CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
 SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='').split(',')
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='').split(',')
+# SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Content Security Policy
 CSP_DEFAULT_SRC = ("'self'",)

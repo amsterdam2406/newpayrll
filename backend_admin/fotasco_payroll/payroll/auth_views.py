@@ -326,7 +326,6 @@ def verify_password(request):
 
     # NEW: Endpoint to get next employee ID for preview
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
 def get_next_employee_id(request):
     """Get next auto-generated employee ID for preview (does NOT reserve it)"""
     employee_type = request.query_params.get('type', 'staff')

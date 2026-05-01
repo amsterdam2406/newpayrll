@@ -8,7 +8,7 @@
 // CONFIGURATION
 // ==========================================
 const CONFIG = {
-    API_BASE_URL: window.location.origin,  // FIXED: Dynamic base URL
+    API_BASE_URL: window.location.origin,  // FIXED: Dynamic base URL - now supports HTTPS
     TOKEN_REFRESH_INTERVAL: 25 * 60 * 1000, // FIXED: Match 30min token - 5min buffer
     MAX_LOGIN_ATTEMPTS: 5,
     LOCKOUT_DURATION: 15 * 60 * 1000,
@@ -224,8 +224,8 @@ function closeModal(id) {
 // ==========================================
 
 async function apiRequest(url, options = {}) {
-    // FIXED: Ensure proper URL construction
-    const baseUrl = window.location.origin;
+    // FIXED: Use CONFIG.API_BASE_URL for consistent API calls
+    const baseUrl = CONFIG.API_BASE_URL;
     const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url.startsWith('/') ? '' : '/'}${url}`;
     
     const token = AppState.accessToken || localStorage.getItem('accessToken');
@@ -241,7 +241,8 @@ async function apiRequest(url, options = {}) {
         headers,
         body: options.body instanceof FormData 
             ? options.body 
-            : (options.body ? JSON.stringify(options.body) : null)
+            : (options.body ? JSON.stringify(options.body) : null),
+        signal: options.signal // Add abort signal support
     };
 
     try {
@@ -404,6 +405,10 @@ function setupBankVerification() {
     const statusEl = document.getElementById('verificationStatus');
     
     if (!accountInput || !bankSelect || !holderInput) return;
+    
+    // Make account holder name readonly - no manual input allowed
+    holderInput.readOnly = true;
+    holderInput.placeholder = 'Auto-filled from bank verification';
 
     const verifyCurrentAccount = debounce(async () => {
         const accountNumber = accountInput.value.trim();
@@ -425,13 +430,20 @@ function setupBankVerification() {
         }
         
         try {
+            // Add 20-second timeout for account verification
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 seconds
+            
             const res = await apiRequest('/api/paystack/verify-account/', {
                 method: 'POST',
                 body: {
                     account_number: accountNumber,
                     bank_code: bankCode
-                }
+                },
+                signal: controller.signal // Pass the abort signal
             });
+            
+            clearTimeout(timeoutId); // Clear timeout if request completes
             
             // FIXED: Check Paystack response format properly
             if (res.success && res.data?.status === true && res.data?.data?.account_name) {
@@ -446,30 +458,44 @@ function setupBankVerification() {
             } else {
                 holderInput.value = '';
                 holderInput.style.background = '#f8d7da'; // Light red
-                const msg = res.message || res.data?.message || 'Could not verify account. Please enter name manually.';
+                const msg = res.message || res.data?.message || 'Could not verify account. Please check account details.';
                 AppState.lastVerifiedAccountKey = null;
                 if (statusEl) {
                     statusEl.textContent = msg;
                     statusEl.className = 'text-warning';
                 }
-                holderInput.readOnly = false;
-                holderInput.focus();
+                // No manual input allowed - keep readonly
+                showToast(msg, 'warning');
             }
         } catch (err) {
             console.error('Verification error:', err);
             holderInput.value = '';
-            holderInput.readOnly = false;
+            holderInput.readOnly = true; // Keep readonly
             AppState.lastVerifiedAccountKey = null;
-            if (statusEl) {
-                statusEl.textContent = 'Verification service unavailable. Enter name manually.';
-                statusEl.className = 'text-warning';
+            if (err.name === 'AbortError') {
+                if (statusEl) {
+                    statusEl.textContent = 'Verification timed out due to slow connection. Please try again.';
+                    statusEl.className = 'text-warning';
+                }
+                showToast('Verification timed out. Check your connection and try again.', 'warning');
+            } else if (err.status === 429) {
+                if (statusEl) {
+                    statusEl.textContent = 'Too many requests. Please wait a moment and try again.';
+                    statusEl.className = 'text-warning';
+                }
+                showToast('Account verification rate limited. Please wait before trying again.', 'warning');
+            } else {
+                if (statusEl) {
+                    statusEl.textContent = 'Verification service unavailable. Please check account details.';
+                    statusEl.className = 'text-warning';
+                }
             }
         } finally {
             AppState.pendingAccountVerificationKey = null;
             holderInput.disabled = false;
             holderInput.placeholder = 'Account Holder Name';
         }
-    }, 800);
+    }, 100); // Reduced debounce to 100ms for near-instant response
 
     accountInput.addEventListener('input', verifyCurrentAccount);
     bankSelect.addEventListener('change', () => {
@@ -477,7 +503,7 @@ function setupBankVerification() {
         holderInput.value = '';
         holderInput.style.background = '';
         if (statusEl) {
-            statusEl.textContent = 'Enter account number and leave field to auto-verify';
+            statusEl.textContent = 'Enter 10-digit account number to auto-verify';
             statusEl.className = 'text-muted';
         }
         if (accountInput.value.trim().length === 10) {
@@ -873,12 +899,36 @@ async function handleCreateEmployee(e) {
         return;
     }
 
+    // Generate username from name (first letter + last name)
+    const nameParts = payload.name.split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join('') || '';
+    const username = (firstName.charAt(0) + lastName).toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // Generate default password (should be changed later)
+    const defaultPassword = 'TempPass123!';
+
+    const registerPayload = {
+        username: username,
+        password: defaultPassword,
+        full_name: payload.name,
+        role: payload.type,
+        location: payload.location,
+        salary: payload.salary,
+        email: payload.email,
+        phone: payload.phone,
+        bank_name: payload.bank_name,
+        account_number: payload.account_number,
+        account_holder: payload.account_holder,
+        employee_id: generatedId
+    };
+
     try {
         showLoading(btn);
 
-        const res = await apiRequest('/api/employees/', {
+        const res = await apiRequest('/api/register/', {
             method: 'POST',
-            body: payload
+            body: registerPayload
         });
 
         if (!res.success) {
@@ -1624,7 +1674,7 @@ async function handleClockIn(e) {
     }
 
     let url = action === 'out' ? '/api/attendance/clock_out/' : '/api/attendance/clock_in/';
-    let body = { employee: employeeId, date: new Date().toISOString().split('T')[0] };
+    let body = { employee_id: employeeId, date: new Date().toISOString().split('T')[0] };
 
     if (!markWithoutSelfie) {
         url = action === 'out'
@@ -3095,6 +3145,59 @@ async function verifyBankAccountManual() {
 
 
 // ==========================================
+// PASSWORD CHANGE FUNCTIONS
+// ==========================================
+
+function showChangePasswordModal() {
+    document.getElementById('changePasswordForm').reset();
+    openModal('changePasswordModal');
+}
+
+async function handleChangePassword(event) {
+    event.preventDefault();
+    
+    const oldPassword = document.getElementById('oldPassword').value;
+    const newPassword = document.getElementById('newPassword').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+    
+    if (newPassword !== confirmPassword) {
+        showToast('New passwords do not match', 'error');
+        return;
+    }
+    
+    if (newPassword.length < 8) {
+        showToast('New password must be at least 8 characters long', 'error');
+        return;
+    }
+    
+    showLoading(null, document.getElementById('globalSpinner'));
+    
+    try {
+        const res = await apiRequest('/api/change-password/', {
+            method: 'POST',
+            body: {
+                old_password: oldPassword,
+                new_password: newPassword,
+                confirm_password: confirmPassword
+            }
+        });
+        
+        if (res.success) {
+            showToast('Password changed successfully! You will be logged out for security.', 'success');
+            closeModal('changePasswordModal');
+            setTimeout(() => logout(), 2000); // Logout after 2 seconds
+        } else {
+            showToast(res.message || 'Failed to change password', 'error');
+        }
+    } catch (err) {
+        showToast('Error changing password. Please try again.', 'error');
+    } finally {
+        hideLoading(null, document.getElementById('globalSpinner'));
+    }
+}
+
+
+// ==========================================
 // GLOBAL EXPORTS - MUST BE AT END OF FILE
 // ==========================================
 
@@ -3170,6 +3273,10 @@ const EXPOSED_FUNCTIONS = {
     exportAllEmployees,        // <-- THIS WAS MISSING
     exportPaymentHistory,
     confirmExport,
+    
+    // Password Change
+    showChangePasswordModal,
+    handleChangePassword,
     
     // Filters
     filterHistory,

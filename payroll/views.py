@@ -374,9 +374,6 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             return Employee.objects.filter(status='active').order_by('-created_at')
         return Employee.objects.filter(user=user, status='active').order_by('-created_at')
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
     def create(self, request, *args, **kwargs):
         print("Employee create payload:", request.data)
         return super().create(request, *args, **kwargs)
@@ -582,10 +579,10 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         attendance.save()
 
     def _get_employee(self, request):
+        employee_id = request.data.get('employee_id') or request.data.get('employee')
         if request.user.is_superuser or request.user.role == 'admin':
-            emp_id = request.data.get('employee_id')
-            if emp_id:
-                return Employee.objects.get(id=emp_id)
+            if employee_id:
+                return Employee.objects.get(employee_id=employee_id)
         return Employee.objects.get(user=request.user)
 
     @staticmethod

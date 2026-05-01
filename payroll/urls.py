@@ -10,7 +10,7 @@ from .views import (
 )
 from .auth_views import (
     login_view, register_view, logout_view, CookieTokenRefreshView, 
-    verify_password, get_next_employee_id, CurrentUserView
+    verify_password, get_next_employee_id, CurrentUserView, change_password
 )
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.conf import settings
@@ -56,6 +56,9 @@ urlpatterns = [
     
     # Employee ID preview
     path('api/next-employee-id/', get_next_employee_id, name='next-employee-id'),
+    
+    # Password change
+    path('api/change-password/', change_password, name='change-password'),
     
     # Paystack endpoints - ONLY THESE TWO (removed duplicates)
     path('api/paystack/banks/', paystack_banks, name='paystack-banks'),
