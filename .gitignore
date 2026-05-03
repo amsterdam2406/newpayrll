@@ -78,3 +78,6 @@ Thumbs.db
 .vscode/
 .idea/key.pem 
 cert.pemcert.pem 
+
+templates/index.html
+static/frontend/script.js
