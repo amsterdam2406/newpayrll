@@ -72,8 +72,6 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'csp',  # Added for Content Security Policy
-    # 'sslserver',  # Added for HTTPS development support
     
     # Third-party apps
     'rest_framework',
@@ -81,6 +79,7 @@ INSTALLED_APPS = [
     'django_filters',
     'rest_framework_simplejwt.token_blacklist',
     
+    'csp',  # Content Security Policy
     # Local apps
     'payroll',
     'django_extensions',
@@ -301,23 +300,33 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Production Security Settings
 # Set these to True in production environment
-SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
-SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
-SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=True, cast=bool)
-SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=True, cast=bool)
-SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'DENY'
-CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
-SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
-SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
-CSRF_COOKIE_HTTPONLY = True
-SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_SAMESITE = 'Lax'
-SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+if not DEBUG:
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=True, cast=bool)
+    SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=True, cast=bool)
+    CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
+    SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
+else:
+    SECURE_SSL_REDIRECT = False
+    SECURE_HSTS_SECONDS = 0
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+    SECURE_HSTS_PRELOAD = False
+    CSRF_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = False
 
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+    CSRF_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    CSRF_COOKIE_SAMESITE = 'Lax'
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 
+# Ensure NO other settings starting with "CSP_" exist in this file.
 # Content Security Policy
 CONTENT_SECURITY_POLICY = {
     'DIRECTIVES': {
@@ -400,6 +409,24 @@ LOGGING = {
         'django': {
             'handlers': ['console', 'file'],
             'level': LOG_LEVEL,
+            'propagate': False,
+        },
+
+        'django.utils.autoreload': {
+            'handlers': ['console'],
+            'level': 'INFO',  # Silences the "File first seen with mtime" debug logs
+            'propagate': False,
+        },
+        
+        'django.db.backends': {
+            'handlers': ['console'],
+            'level': 'INFO',  # This silences the raw SQL "stuss"
+            'propagate': False,
+        },
+
+        'django.server': {
+            'handlers': ['console'],
+            'level': 'INFO',
             'propagate': False,
         },
 
