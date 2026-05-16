@@ -67,7 +67,7 @@ class CookieTokenRefreshView(TokenRefreshView):
                 key='refresh_token',
                 value=response.data['refresh'],
                 httponly=True,
-                secure=False,  # Set True in production
+        secure=not settings.DEBUG,
                 path="/"
             )
         return response
@@ -128,7 +128,7 @@ def login_view(request):
         key='refresh_token',
         value=str(refresh),
         httponly=True,
-        secure=False,  # Set to True in production
+        secure=not settings.DEBUG,
         path="/"
     )
 

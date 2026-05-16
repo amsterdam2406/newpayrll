@@ -351,7 +351,7 @@ CONTENT_SECURITY_POLICY = {
             "'self'", "data:", "https://cdn.paystack.com"
         ),
         'frame-src': ("'self'", "https://js.paystack.co"),
-        'connect-src': ("'self'", "https://api.paystack.co"),
+        'connect-src': ("'self'", "https://api.paystack.co", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com"),
     }
 }
 

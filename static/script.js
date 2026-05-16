@@ -751,13 +751,19 @@ async function handleLogin(e) {
             body: JSON.stringify({ username, password })
         });
 
-        const data = await response.json();
+        let data = {};
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+            data = await response.json();
+        }
 
         if (!response.ok) {
             AppState.loginAttempts++;
             if (AppState.loginAttempts >= CONFIG.MAX_LOGIN_ATTEMPTS) {
                 AppState.loginLockedUntil = Date.now() + CONFIG.LOCKOUT_DURATION;
                 showToast('Too many failed attempts. Account locked for 15 minutes.', 'error');
+            } else if (response.status === 500) {
+                showToast('Server error. Please check backend logs.', 'error');
             } else {
                 showToast(data.error || 'Invalid credentials', 'error');
             }
@@ -3427,10 +3433,7 @@ function setupEventListeners() {
         const form = document.getElementById(id);
         if (form) {
             form.addEventListener('submit', handler);
-            console.log(`Attached handler to form: ${id}`);
-        } else {
-            console.warn(`Form not found: ${id}`);
-        }
+        } // Removed the warning log to keep the console clean
     });
 }
 
