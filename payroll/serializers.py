@@ -11,10 +11,44 @@ from django.core.files.base import ContentFile
 from .image_utils import compress_and_validate_image
 from django.utils import timezone
 from django.db import transaction, IntegrityError
+from django.db.models import Sum
 import re
+from .paystack import PaystackAPI
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def _name_tokens(value):
+    return {
+        token for token in re.sub(r'[^a-zA-Z\s]', ' ', value or '').lower().split()
+        if len(token) > 1
+    }
+
+
+def _verify_employee_bank_account(full_name, account_number, bank_code, submitted_holder=None):
+    result = PaystackAPI().verify_account(account_number, bank_code)
+    verified_name = (result.get('data') or {}).get('account_name') if isinstance(result.get('data'), dict) else None
+    if not result.get('status') or not verified_name:
+        raise serializers.ValidationError({
+            'account_holder': result.get('message') or 'Bank account could not be verified with Paystack.'
+        })
+
+    employee_tokens = _name_tokens(full_name)
+    account_tokens = _name_tokens(verified_name)
+    if len(employee_tokens) < 2:
+        raise serializers.ValidationError({
+            'name': 'Enter at least two names. One name cannot create an employee account.'
+        })
+    if len(employee_tokens.intersection(account_tokens)) < 2:
+        raise serializers.ValidationError({
+            'account_holder': f'Employee name must match verified account holder name: {verified_name}'
+        })
+    if submitted_holder and _name_tokens(submitted_holder) != account_tokens:
+        raise serializers.ValidationError({
+            'account_holder': 'Account holder name must come from Paystack verification.'
+        })
+    return verified_name
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -64,6 +98,8 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
+    applied_deductions = serializers.SerializerMethodField(read_only=True)
+    net_salary = serializers.SerializerMethodField(read_only=True)
     user = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), required=False, allow_null=True, write_only=True
     )
@@ -75,13 +111,29 @@ class EmployeeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'employee_id', 'name', 'type', 'location',
             'salary', 'phone', 'email', 'bank_name', 'bank_code', 'account_number',
-            'account_holder', 'status', 'join_date', 'id_sequence', 'created_at', 'updated_at'
+            'account_holder', 'status', 'join_date', 'id_sequence', 'applied_deductions',
+            'net_salary', 'created_at', 'updated_at'
         ]
         read_only_fields = ['employee_id', 'id_sequence', 'created_at', 'updated_at', 'id', 'join_date']
+
+    def get_applied_deductions(self, obj):
+        month_key = timezone.now().strftime('%Y-%m')
+        year, month = map(int, month_key.split('-'))
+        total = obj.deductions.filter(
+            status='applied',
+            date__year=year,
+            date__month=month,
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        return float(total)
+
+    def get_net_salary(self, obj):
+        return float(obj.salary) - self.get_applied_deductions(obj)
     
     def validate_name(self, value):
         if not value or not value.strip():
             raise serializers.ValidationError("Employee name cannot be empty")
+        if len(_name_tokens(value)) < 2:
+            raise serializers.ValidationError("Enter at least two names. One name cannot create an employee account.")
         return value
 
     def validate_salary(self, value):
@@ -131,6 +183,22 @@ class EmployeeSerializer(serializers.ModelSerializer):
         if queryset.exists():
             raise serializers.ValidationError("This email is already registered")
         return value
+
+    def validate(self, attrs):
+        bank_fields = ['bank_name', 'bank_code', 'account_number', 'account_holder']
+        if any(attrs.get(field) for field in bank_fields):
+            missing = [field for field in bank_fields if not attrs.get(field)]
+            if missing:
+                raise serializers.ValidationError({
+                    field: 'This field is required for bank verification.' for field in missing
+                })
+            attrs['account_holder'] = _verify_employee_bank_account(
+                attrs.get('name') or (self.instance.name if self.instance else ''),
+                attrs.get('account_number'),
+                attrs.get('bank_code'),
+                attrs.get('account_holder')
+            )
+        return attrs
 
     def create(self, validated_data):
         provided_user = validated_data.pop('user', None)
@@ -335,6 +403,8 @@ class DeductionSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         if attrs['amount'] > attrs['employee'].salary:
             raise serializers.ValidationError("Deduction amount cannot exceed employee's salary.")
+        if not attrs.get('reason') or not attrs['reason'].strip():
+            raise serializers.ValidationError({"reason": "A valid deduction reason is required."})
         return attrs
 
 

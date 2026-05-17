@@ -19,7 +19,6 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
-from django.core.files.base import ContentFile
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q, Sum
@@ -66,6 +65,7 @@ from .serializers import (
     SelfSignupSerializer
 )
 from .paystack import PaystackAPI, NIGERIAN_BANKS
+from .image_utils import compress_and_validate_image
 from .permissions import (
     IsAdmin, CanCreateEmployee, IsSackAdmin, IsPayrollAdmin,
     IsDeductionAdmin, CanEditNotification, CanViewAndEditCompany
@@ -75,6 +75,16 @@ from .utils import log_audit, get_client_ip
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+
+
+def applied_deductions_for_month(employee, month_key):
+    year, month = map(int, month_key.split('-'))
+    return Deduction.objects.filter(
+        employee=employee,
+        status='applied',
+        date__year=year,
+        date__month=month,
+    )
 
 
 def get_employee_bank_code(employee):
@@ -175,7 +185,7 @@ def reset_password_confirm(request):
     return Response({'error': 'The reset link is invalid or has expired.'}, status=400)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def paystack_banks(request):
     """Get list of Nigerian banks from Paystack"""
     paystack = PaystackAPI()
@@ -184,7 +194,7 @@ def paystack_banks(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 @throttle_classes([BankVerifyThrottle])
 def paystack_verify_account(request):
     """Verify bank account number"""
@@ -237,7 +247,11 @@ def clear_paystack_cache(request):
     try:
         # This pattern matches keys created in paystack.py
         # Key format: paystack:resolve:{bank_code}:{account_number}
-        cache.delete_pattern("paystack:resolve:*")
+        if hasattr(cache, 'delete_pattern'):
+            cache.delete_pattern("paystack:resolve:*")
+        else:
+            # Fallback for LocMemCache
+            cache.clear()
         log_audit(request.user, "Cleared all Paystack bank resolution caches", request)
         return Response({'status': True, 'message': 'Bank resolution cache cleared successfully'})
     except Exception as e:
@@ -420,9 +434,6 @@ def _handle_transfer_success(data):
             if not payment.change_status('completed'):
                 return
 
-            # Mark pending deductions as applied so they aren't deducted again next month
-            Deduction.objects.filter(employee=payment.employee, status='pending').update(status='applied')
-
             payment.paystack_reference = str(data.get('id', ''))
             payment.save()
             
@@ -528,9 +539,6 @@ def _handle_charge_success(data):
         with transaction.atomic():
             payment.status = 'completed'
             
-            # Mark pending deductions as applied
-            Deduction.objects.filter(employee=payment.employee, status='pending').update(status='applied')
-
             payment.paystack_reference = data.get('reference', '')
             payment.save()
 
@@ -556,7 +564,8 @@ def _handle_charge_success(data):
 def verify_payment_status(request, reference):
     """
     Frontend polls this endpoint to check if a payment is completed/failed.
-    Automated background status updates removed to ensure strict admin control via webhooks or manual verification.
+    Poll Paystack as a fallback so successful transfers do not stay stuck as processing
+    when webhook delivery is delayed or not configured correctly.
     """
     try:
         payment = Payment.objects.get(transaction_reference=reference)
@@ -565,6 +574,24 @@ def verify_payment_status(request, reference):
             {'status': False, 'message': 'Payment not found'},
             status=status.HTTP_404_NOT_FOUND
         )
+
+    if payment.status == 'processing' and payment.payment_method == 'bank_transfer':
+        try:
+            verification = PaystackAPI().verify_transfer(reference)
+            transfer_data = verification.get('data') if isinstance(verification.get('data'), dict) else {}
+            transfer_status = transfer_data.get('status')
+            if verification.get('status') is True and transfer_status == 'success':
+                with transaction.atomic():
+                    payment = Payment.objects.select_for_update().get(pk=payment.pk)
+                    if payment.status == 'processing':
+                        payment.status = 'completed'
+                        payment.paystack_reference = str(transfer_data.get('id', '') or transfer_data.get('reference', ''))
+                        payment.save(update_fields=['status', 'paystack_reference', 'updated_at'])
+            elif verification.get('status') is True and transfer_status in ['failed', 'reversed']:
+                payment.status = 'failed'
+                payment.save(update_fields=['status', 'updated_at'])
+        except Exception as exc:
+            logger.error(f"Payment status polling failed for {reference}: {exc}")
 
     return Response({
         'status': True,
@@ -815,13 +842,20 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         total_self_registered = active_qs.filter(is_self_registered=True).count()
 
         # Calculate exact financial totals for the current month
-        deduction_qs = Deduction.objects.filter(status='pending')
+        today = timezone.now().date()
+        deduction_qs = Deduction.objects.filter(
+            status='applied',
+            date__year=today.year,
+            date__month=today.month,
+        )
         if location:
             deduction_qs = deduction_qs.filter(employee__location=location)
-        total_deductions = deduction_qs.aggregate(Sum('amount'))['amount__sum'] or 0
+        
+        # Added safety for aggregation
+        deduction_agg = deduction_qs.aggregate(total=Sum('amount'))
+        total_deductions = deduction_agg['total'] or 0
 
         # Attendance today
-        today = timezone.now().date()
         attendance_qs = Attendance.objects.filter(date=today)
         if location:
             attendance_qs = attendance_qs.filter(employee__location=location)
@@ -839,7 +873,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         )
         if location:
             payment_qs = payment_qs.filter(employee__location=location)
-        total_paid_this_month = payment_qs.aggregate(Sum('net_amount'))['net_amount__sum'] or 0
+        payment_agg = payment_qs.aggregate(total=Sum('net_amount'))
+        total_paid_this_month = payment_agg['total'] or 0
 
         # Monthly Salary Summary (Last 6 Months)
         salary_summary = []
@@ -879,13 +914,15 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def net_salary(self, request, pk=None):
-        """Get specific net salary for an employee after pending deductions"""
+        """Get specific net salary for an employee after applied deductions this month"""
         employee = self.get_object()
-        pending = Deduction.objects.filter(employee=employee, status='pending').aggregate(Sum('amount'))['amount__sum'] or 0
+        month_key = timezone.now().strftime('%Y-%m')
+        applied = applied_deductions_for_month(employee, month_key).aggregate(Sum('amount'))['amount__sum'] or 0
         return Response({
             'base_salary': float(employee.salary),
-            'pending_deductions': float(pending),
-            'net_salary': float(employee.salary - pending)
+            'pending_deductions': float(applied),
+            'applied_deductions': float(applied),
+            'net_salary': float(employee.salary - applied)
         })
 
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
@@ -1079,6 +1116,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         except Exception:
             raise ValueError("Invalid base64 data")
 
+    @staticmethod
+    def _photo_content_file(photo_data):
+        try:
+            return compress_and_validate_image(photo_data)
+        except ValidationError as exc:
+            message = exc.messages[0] if hasattr(exc, 'messages') and exc.messages else str(exc)
+            raise ValueError(message)
+
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
     def clock_in(self, request):
         try:
@@ -1128,35 +1173,39 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def clock_in_with_photo(self, request):
         try:
             employee = self._get_employee(request)
+            photo_data = request.data.get('photo')
+            if not photo_data:
+                return Response({'error': 'Photo is required for attendance'}, status=status.HTTP_400_BAD_REQUEST)
+
+            attendance, created = Attendance.objects.get_or_create(
+                employee=employee, date=timezone.now().date()
+            )
+            if attendance.clock_in_timestamp:
+                return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
+
+            photo_file = self._photo_content_file(photo_data)
+            attendance.clock_in_photo.save(
+                f'clockin_{employee.id}_{timezone.now().strftime("%Y%m%d%H%M%S")}.jpg',
+                photo_file, save=False
+            )
+            attendance.clock_in_timestamp = timezone.now()
+            attendance.clock_in = timezone.now().time()
+            attendance.status = 'present'
+            attendance.clock_method = 'selfie'
+            attendance.save()
+            logger.info(f"{request.user.username} clocked in with photo")
+            return Response({
+                'message': 'Clocked in successfully',
+                'status': 'present',
+                'photo_url': attendance.clock_in_photo.url if attendance.clock_in_photo else None,
+            })
         except Employee.DoesNotExist:
             return Response({'error': 'Employee profile not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        photo_data = request.data.get('photo')
-        if not photo_data:
-            return Response({'error': 'Photo is required for attendance'}, status=status.HTTP_400_BAD_REQUEST)
-
-        attendance, created = Attendance.objects.get_or_create(
-            employee=employee, date=timezone.now().date()
-        )
-        if attendance.clock_in_timestamp:
-            return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            ext, image_data = self._decode_photo(photo_data)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        attendance.clock_in_photo.save(
-            f'clockin_{employee.id}_{timezone.now().timestamp()}.{ext}',
-            ContentFile(image_data), save=False
-        )
-        attendance.clock_in_timestamp = timezone.now()
-        attendance.clock_in = timezone.now().time()
-        attendance.status = 'present'
-        attendance.clock_method = 'selfie'
-        attendance.save()
-        logger.info(f"{request.user.username} clocked in with photo")
-        return Response({'message': 'Clocked in successfully', 'status': 'present'})
+        except Exception as exc:
+            logger.error(f"Clock-in with photo failed: {exc}", exc_info=True)
+            return Response({'error': 'Failed to save attendance photo'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
     def clock_out(self, request):
@@ -1184,37 +1233,39 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def clock_out_with_photo(self, request):
         try:
             employee = self._get_employee(request)
+            attendance = Attendance.objects.get(employee=employee, date=timezone.now().date())
+
+            if attendance.clock_out_timestamp:
+                return Response({'error': 'Already clocked out today'}, status=status.HTTP_400_BAD_REQUEST)
+
+            photo_data = request.data.get('photo')
+            if not photo_data:
+                return Response({'error': 'Photo is required for clock out'}, status=status.HTTP_400_BAD_REQUEST)
+
+            photo_file = self._photo_content_file(photo_data)
+            attendance.clock_out_photo.save(
+                f'clockout_{employee.id}_{timezone.now().strftime("%Y%m%d%H%M%S")}.jpg',
+                photo_file, save=False
+            )
+            attendance.clock_out_timestamp = timezone.now()
+            attendance.clock_out = timezone.now().time()
+            attendance.status = 'present'
+            attendance.clock_method = 'selfie'
+            attendance.save()
+            logger.info(f"{request.user.username} clocked out with photo")
+            return Response({
+                'message': 'Clocked out successfully',
+                'photo_url': attendance.clock_out_photo.url if attendance.clock_out_photo else None,
+            })
         except Employee.DoesNotExist:
             return Response({'error': 'Employee profile not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            attendance = Attendance.objects.get(employee=employee, date=timezone.now().date())
         except Attendance.DoesNotExist:
             return Response({'error': 'No clock-in record found for today'}, status=status.HTTP_404_NOT_FOUND)
-
-        if attendance.clock_out_timestamp:
-            return Response({'error': 'Already clocked out today'}, status=status.HTTP_400_BAD_REQUEST)
-
-        photo_data = request.data.get('photo')
-        if not photo_data:
-            return Response({'error': 'Photo is required for clock out'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            ext, image_data = self._decode_photo(photo_data)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        attendance.clock_out_photo.save(
-            f'clockout_{employee.id}_{timezone.now().timestamp()}.{ext}',
-            ContentFile(image_data), save=False
-        )
-        attendance.clock_out_timestamp = timezone.now()
-        attendance.clock_out = timezone.now().time()
-        attendance.status = 'present'
-        attendance.clock_method = 'selfie'
-        attendance.save()
-        logger.info(f"{request.user.username} clocked out with photo")
-        return Response({'message': 'Clocked out successfully'})
+        except Exception as exc:
+            logger.error(f"Clock-out with photo failed: {exc}", exc_info=True)
+            return Response({'error': 'Failed to save attendance photo'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
     def mark_leave(self, request):
@@ -1313,8 +1364,6 @@ class PaymentViewSet(viewsets.ModelViewSet):
                             payment.change_status('completed')
                             payment.paystack_reference = str(data.get('id', ''))
                             payment.save()
-                            # DRF handles logic: Apply deductions only on success
-                            Deduction.objects.filter(employee=payment.employee, status='pending').update(status='applied')
                         updated_count += 1
                     elif data.get('status') in ['failed', 'reversed']:
                         payment.change_status('failed')
@@ -1427,8 +1476,8 @@ class PaymentViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-                total_deductions = Deduction.objects.filter(
-                    employee=employee, status='pending'
+                total_deductions = applied_deductions_for_month(
+                    employee, payment_month
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
                 net_salary = employee.salary - total_deductions
 
@@ -1507,6 +1556,13 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
             if transfer_result.get('status'):
                 transfer_status = transfer_result.get('data', {}).get('status', 'pending')
+                if transfer_status == 'success':
+                    payment.status = 'completed'
+                    payment.paystack_reference = str(transfer_result.get('data', {}).get('id', '') or '')
+                    payment.save(update_fields=['status', 'paystack_reference', 'updated_at'])
+                elif transfer_status in ['failed', 'reversed']:
+                    payment.status = 'failed'
+                    payment.save(update_fields=['status', 'updated_at'])
                 logger.info(
                     f"{request.user.username} initiated salary transfer for "
                     f"{employee.name}: NGN {net_salary} (status={transfer_status})"
@@ -1542,6 +1598,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
 
         paystack = PaystackAPI()
         payments_created = []
+        local_payments = []
         transfers_payload = []
         errors = []
         total_amount = 0
@@ -1566,8 +1623,8 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     errors.append(f"{employee.name}: missing bank_code")
                     continue
 
-                pending_deductions = Deduction.objects.filter(
-                    employee=employee, status='pending'
+                pending_deductions = applied_deductions_for_month(
+                    employee, current_month
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
 
                 net_amount = employee.salary - pending_deductions
@@ -1622,6 +1679,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     'net_salary': float(net_amount),
                     'reference': payment.transaction_reference,
                 })
+                local_payments.append(payment)
 
             except Employee.DoesNotExist:
                 errors.append(f"Employee ID {emp_id} not found or not active")
@@ -1634,6 +1692,10 @@ class PaymentViewSet(viewsets.ModelViewSet):
             if not bulk_result.get('status'):
                 logger.error(f"Bulk transfer API error: {bulk_result.get('message')}")
                 errors.append(f"Bulk transfer error: {bulk_result.get('message')}")
+                failed_ids = [payment.id for payment in local_payments]
+                Payment.objects.filter(id__in=failed_ids, status='processing').update(status='failed')
+                payments_created = []
+                total_amount = 0
 
         return Response({
             'message': f'Initiated {len(payments_created)} salary transfers',
@@ -1820,7 +1882,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         ).first()
 
         month_deductions = Deduction.objects.filter(
-            employee=employee, date__range=[start_date, end_date]
+            employee=employee, date__range=[start_date, end_date], status='applied'
         )
         total_deductions = month_deductions.aggregate(Sum('amount'))['amount__sum'] or 0
         net_salary = employee.salary - total_deductions
@@ -1919,7 +1981,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
         total = 0
         count = 0
         for e in employees:
-            pending = Deduction.objects.filter(employee=e, status='pending').aggregate(Sum('amount'))['amount__sum'] or 0
+            pending = applied_deductions_for_month(e, timezone.now().strftime('%Y-%m')).aggregate(Sum('amount'))['amount__sum'] or 0
             total += (e.salary - pending)
             count += 1
         return Response({'total_amount': float(total), 'count': count})
@@ -1968,7 +2030,8 @@ class PaymentViewSet(viewsets.ModelViewSet):
             total_deductions = Deduction.objects.filter(
                 employee=employee, 
                 date__year=year, 
-                date__month=month_num
+                date__month=month_num,
+                status='applied'
             ).aggregate(Sum('amount'))['amount__sum'] or 0
             net_salary = employee.salary - total_deductions
 
@@ -2205,8 +2268,7 @@ class DeductionViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def perform_create(self, serializer):
-        apply_now = self.request.data.get('apply_now', False)
-        deduction = serializer.save()
+        deduction = serializer.save(status='applied')
         
         # Logic to check if deduction is heavy (>40% of salary)
         threshold = deduction.employee.salary * Decimal('0.4')
@@ -2470,9 +2532,13 @@ class EmployeeRequestViewSet(viewsets.ModelViewSet):
         )
         return Response({'message': 'Request declined', 'status': 'declined'})
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated, IsAdmin])
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsAdmin])
     def download_attachments(self, request, pk=None):
         """Download all attachments for a request as a ZIP file"""
+        password = request.data.get('password')
+        if not password or not request.user.check_password(password):
+            return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+
         req = self.get_object()
         attachments = req.attachments.all()
         
@@ -2493,6 +2559,13 @@ class EmployeeRequestViewSet(viewsets.ModelViewSet):
                         logger.error(f"Error adding file {file_name} to zip: {e}")
 
         buffer.seek(0)
+        DownloadLog.objects.create(
+            user=request.user,
+            employee=req.employee,
+            doc_type='attachments',
+            reference=str(req.id),
+            ip_address=get_client_ip(request)
+        )
         response = HttpResponse(buffer, content_type='application/zip')
         filename = f"attachments_{req.employee.employee_id}_{req.id[:8]}.zip"
         response['Content-Disposition'] = f'attachment; filename="{filename}"'

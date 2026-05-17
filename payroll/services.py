@@ -24,6 +24,16 @@ def get_employee_bank_code(employee):
             return code
     return None
 
+
+def applied_deductions_for_month(employee, month_key):
+    year, month = map(int, month_key.split('-'))
+    return Deduction.objects.filter(
+        employee=employee,
+        status='applied',
+        date__year=year,
+        date__month=month,
+    )
+
 class PaystackService:
     def __init__(self):
         self.paystack = PaystackAPI()
@@ -64,8 +74,8 @@ class PaystackService:
                     raise ValueError("Invalid custom amount")
             else:
                 payment_month = timezone.now().strftime('%Y-%m')
-                total_deductions = Deduction.objects.filter(
-                    employee=employee, status='pending'
+                total_deductions = applied_deductions_for_month(
+                    employee, payment_month
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
                 net_salary = employee.salary - total_deductions
 
@@ -113,8 +123,8 @@ class PaystackService:
                 employee = Employee.objects.get(id=emp_id, status='active')
                 recipient_code = self.get_or_create_recipient(employee)
                 
-                pending_deductions = Deduction.objects.filter(
-                    employee=employee, status='pending'
+                pending_deductions = applied_deductions_for_month(
+                    employee, current_month
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
                 net_amount = employee.salary - pending_deductions
                 total_amount += float(net_amount)

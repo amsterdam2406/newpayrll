@@ -1,6 +1,5 @@
 /**
- * Fotasco Payr
- * Fotasco Payroll - Poduction Ready JavaScript
+ * Fotasco Payroll - Production Ready JavaScript
  * DRF API Integration with JWT Authentication
  * Version: 5.0.0 - All Critical Fixes Applied
  */
@@ -809,7 +808,7 @@ async function handleLogin(e) {
 
 function logout() {
     // Call backend logout to blacklist token
-    apiRequest('/api/logout/', { method: 'POST' }).catch(() => {});
+    apiRequest('/logout/', { method: 'POST' }).catch(() => {});
     
     AppState.accessToken = null;
     AppState.refreshToken = null; // ADDED
@@ -1184,7 +1183,7 @@ function renderEmployees(list = []) {
 async function fetchNextEmployeeId(type) {
     const res = await apiRequest(buildUrl('/next-employee-id/', { type }));
     if (res.success && res.data?.next_id) return res.data.next_id;
-    throw new Error(res.message || 'Failed to fetch next employee ID');
+    return '';
 }
 
 function validateEmployeePayload(payload) {
@@ -1338,6 +1337,7 @@ async function createAccount(e) {
         { check: !payload.username, msg: 'Username is required' },
         { check: !payload.password || payload.password.length < 8, msg: 'Password must be at least 8 characters' },
         { check: !payload.full_name, msg: 'Full name is required' },
+        { check: payload.full_name && payload.full_name.trim().split(/\s+/).length < 2, msg: 'Enter at least two names' },
         { check: !payload.role, msg: 'Employee type is required' }
     ];
 
@@ -1346,6 +1346,7 @@ async function createAccount(e) {
             { check: !payload.salary, msg: 'Valid salary is required' },
             { check: !payload.location, msg: 'Location is required' },
             { check: !payload.bank_name, msg: 'Bank name is required' },
+            { check: !payload.bank_code, msg: 'Select a valid bank from the list' },
             { check: !payload.account_number || !/^\d{10}$/.test(payload.account_number), msg: 'Valid 10-digit account number required' },
             { check: !payload.account_holder, msg: 'Account holder name is required' }
         );
@@ -1664,7 +1665,7 @@ async function addDeduction(e) {
 
         const res = await apiRequest('/api/deductions/', {
             method: 'POST',
-            body: { employee: employeeId, amount, reason, date, status: 'pending' } // Always pending initially
+            body: { employee: employeeId, amount, reason, date, status: 'applied' }
         });
 
         if (!res.success) throw new Error(res.message);
@@ -1673,6 +1674,10 @@ async function addDeduction(e) {
         closeModal('addDeductionModal');
         document.getElementById('addDeductionForm')?.reset();
         await loadDeductions();
+        await loadEmployees();
+        populatePaymentsTable();
+        populateBulkTable();
+        await updateDashboardStats();
     } catch (err) {
         showToast(`Failed to add deduction: ${err.message}`, 'error');
     } finally {
@@ -1716,6 +1721,10 @@ async function updateDeduction(e) {
         closeModal('editDeductionModal');
         AppState.currentEditingDeductionId = null;
         await loadDeductions();
+        await loadEmployees();
+        populatePaymentsTable();
+        populateBulkTable();
+        await updateDashboardStats();
     } catch (err) {
         showToast(`Failed to update deduction: ${err.message}`, 'error');
     } finally {
@@ -2173,7 +2182,7 @@ async function startBulkPaymentPolling(payments, maxAttempts = 30, interval = 30
         const pending = payments.filter(p => !p.done);
 
         for (const p of pending) {
-            const res = await apiRequest(`/verify-payment-status/${p.reference}/`);
+            const res = await apiRequest(`/payments/verify-payment/${p.reference}/`);
             if (res.success && (res.data.is_completed || res.data.payment_status === 'failed')) {
                 p.done = true;
                 showToast(`${p.employee_name}: ${res.data.payment_status}`, res.data.is_completed ? 'success' : 'error');
@@ -2181,7 +2190,6 @@ async function startBulkPaymentPolling(payments, maxAttempts = 30, interval = 30
         }
 
         if (payments.every(p => p.done) || attempts >= maxAttempts) {
-            await loadDashboard(); // Reload everything to update stats
             await loadDashboard(); // Reloading dashboard updates stats automatically
             return;
         }
@@ -2222,7 +2230,6 @@ async function initiateIndividualPayment(empId) {
             showOTPModal();
         } else {
             showToast(res.data.message || 'Payment initiated', 'success');
-            await loadDashboard(); // Backend handles status, JS just refreshes
             await loadPaymentHistory();
             await updateDashboardStats();
         }
@@ -2239,7 +2246,7 @@ async function startPaymentStatusPolling(reference, maxAttempts = 30, interval =
 
     const poll = async () => {
         attempts++;
-        const res = await apiRequest(`/verify-payment-status/${reference}/`);
+        const res = await apiRequest(`/payments/verify-payment/${reference}/`);
 
         if (res.success && (res.data.is_completed || res.data.payment_status === 'failed')) {
             showToast(`Payment ${res.data.payment_status}`, res.data.is_completed ? 'success' : 'error');
@@ -2832,7 +2839,8 @@ function populateBulkTable() {
         const monthlyPayment = (AppState.payments || []).find(p => 
             idsMatch(p.employee, emp.id) && p.payment_month === currentMonth
         );
-        const netSalary = emp.net_salary || 0;
+        const baseSalary = Number(emp.salary || 0);
+        const netSalary = Number.isFinite(Number(emp.net_salary)) ? Number(emp.net_salary) : baseSalary;
         
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -2868,8 +2876,10 @@ function populatePaymentsTable() {
             idsMatch(p.employee, emp.id) && p.payment_month === currentMonth
         );
         const baseSalary = Number(emp.salary || 0);
-        const netSalary = emp.net_salary || 0;
-        const deductions = baseSalary - netSalary;
+        const netSalary = Number.isFinite(Number(emp.net_salary)) ? Number(emp.net_salary) : baseSalary;
+        const deductions = Number.isFinite(Number(emp.applied_deductions))
+            ? Number(emp.applied_deductions)
+            : Math.max(baseSalary - netSalary, 0);
         
         let statusBadge = '<span class="badge bg-secondary">Not Paid</span>';
         let actionBtn = `<button type="button" class="btn btn-sm btn-success" onclick="initiateIndividualPayment('${emp.id}')">Pay</button>`;
@@ -3022,8 +3032,9 @@ async function handleChangePassword(e) {
 
         if (!res.success) throw new Error(res.message);
 
-        showToast(res.data?.message || 'Password changed successfully!', 'success');
+        showToast(res.data?.message || 'Password changed successfully. Please log in again.', 'success');
         closeModal('changePasswordModal');
+        setTimeout(() => logout(), 1200);
     } catch (err) {
         showToast(err.message || 'Failed to change password', 'error');
     } finally {
@@ -3249,6 +3260,7 @@ async function finishDownload(token, type, modal, url, downloadFilename) {
             : url.replace('request_export/', 'export_csv/');
             
         await triggerSecureDownload(downloadEndpoint, token, downloadFilename);
+        showToast('Download started successfully', 'success');
         closeModal('exportPasswordModal');
 }
 
@@ -3348,8 +3360,8 @@ function setupEmployeeIdGeneration() {
         const nextId = await fetchNextEmployeeId(type);
         
         if (displayEl) {
-            displayEl.textContent = nextId;
-            displayEl.style.color = '#28a745'; // Green to indicate success
+            displayEl.textContent = nextId || 'Will be assigned on create';
+            displayEl.style.color = nextId ? '#28a745' : '#6c757d';
         }
         
         // Update hidden input
@@ -3361,7 +3373,7 @@ function setupEmployeeIdGeneration() {
             hiddenInput.name = 'employee_id';
             document.getElementById('createAccountForm')?.appendChild(hiddenInput);
         }
-        hiddenInput.value = nextId;
+        hiddenInput.value = nextId || '';
     };
 
     if (typeSelect) typeSelect.addEventListener('change', generateId);
@@ -3544,10 +3556,18 @@ async function loadRequests() {
 }
 
 async function downloadRequestAttachments(requestId) {
+    const password = prompt('Enter your login password to download attachments:');
+    if (!password) return;
+
     try {
         const token = AppState.accessToken || localStorage.getItem('accessToken');
         const response = await fetch(`${window.location.origin}/api/requests/${requestId}/download_attachments/`, {
-            headers: { 'Authorization': `Bearer ${token}` }
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ password })
         });
         
         if (!response.ok) throw new Error('Download failed');
@@ -3561,6 +3581,7 @@ async function downloadRequestAttachments(requestId) {
         a.click();
         window.URL.revokeObjectURL(url);
         a.remove();
+        showToast('Attachments downloaded successfully', 'success');
     } catch (err) {
         showToast('Failed to download ZIP: ' + err.message, 'error');
     }

@@ -160,12 +160,14 @@
     const missing = [];
     if (!accountType) missing.push('Employee Type');
     if (!fullName) missing.push('Full Name');
+    if (fullName && fullName.split(/\s+/).length < 2) missing.push('At least two names');
     if (!username) missing.push('Username');
     if (!password) missing.push('Password');
     if (!location) missing.push('Location/Role');
     if (!salary) missing.push('Monthly Salary');
     if (!email) missing.push('Email');
     if (!bankName) missing.push('Bank Name');
+    if (!bankCode) missing.push('Valid Bank Selection');
     if (!accountNumber) missing.push('Account Number');
     if (!accountHolder) missing.push('Account Holder Name');
 
@@ -195,7 +197,7 @@
     try {
       if (typeof window.showLoading === 'function' && btn) window.showLoading(btn);
 
-      const response = await fetch('/api/self-register/', {
+      const response = await fetch('/self-register/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

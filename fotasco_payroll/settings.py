@@ -154,11 +154,12 @@ if DATABASE_URL:
             conn_max_age=600,
             conn_health_checks=True,
             ssl_require=not DEBUG,  # Enforce SSL in production
-            engine='django.db.backends.postgresql',
         )
     }
-    # Ensure SSL options are correctly passed for Render
-    DATABASES['default']['OPTIONS'] = {'sslmode': 'require'}
+    
+    # Render handles SSL via the connection string or ssl_require=True.
+    # Avoid overwriting the entire OPTIONS dictionary here.
+
 else:
     # Local development fallback
     DATABASES = {
@@ -353,8 +354,9 @@ CONTENT_SECURITY_POLICY = {
             "'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"
         ),
         'img-src': (
-            "'self'", "data:", "https://cdn.paystack.com"
+            "'self'", "data:", "blob:", "https://cdn.paystack.com"
         ),
+        'media-src': ("'self'", "blob:"),
         'frame-src': ("'self'", "https://js.paystack.co"),
         'connect-src': ("'self'", "https://api.paystack.co", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com"),
     }

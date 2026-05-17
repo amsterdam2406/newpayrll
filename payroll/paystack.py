@@ -213,8 +213,19 @@ class PaystackAPI:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Paystack bulk transfer error: {e}")
-            return {'status': False, 'message': str(e), 'data': None}
+            error_payload = None
+            if getattr(e, 'response', None) is not None:
+                try:
+                    error_payload = e.response.json()
+                except ValueError:
+                    error_payload = {'raw': e.response.text}
+            message = (
+                error_payload.get('message')
+                if isinstance(error_payload, dict) and error_payload.get('message')
+                else str(e)
+            )
+            logger.error(f"Paystack bulk transfer error: {message} payload={error_payload}")
+            return {'status': False, 'message': message, 'data': error_payload}
         except Exception as e:
             logger.error(f"Paystack bulk transfer unexpected error: {e}")
             return {'status': False, 'message': str(e), 'data': None}

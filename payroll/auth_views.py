@@ -30,11 +30,51 @@ from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework.views import APIView
 from .serializers import UserSerializer
 from .throttles import LoginThrottle
+from .paystack import PaystackAPI
 import re
 
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+
+def _name_tokens(value):
+    return {
+        token for token in re.sub(r'[^a-zA-Z\s]', ' ', value or '').lower().split()
+        if len(token) > 1
+    }
+
+
+def _validate_full_name(value):
+    tokens = _name_tokens(value)
+    if len(tokens) < 2:
+        return 'Enter at least two names. One name cannot create an employee account.'
+    return None
+
+
+def _validate_bank_account_name(full_name, account_number, bank_code, submitted_holder=None):
+    if not account_number or not bank_code:
+        return None, 'Bank code and account number are required for account verification.'
+
+    result = PaystackAPI().verify_account(account_number, bank_code)
+    verified_name = (result.get('data') or {}).get('account_name') if isinstance(result.get('data'), dict) else None
+    if not result.get('status') or not verified_name:
+        return None, result.get('message') or 'Bank account could not be verified with Paystack.'
+
+    employee_tokens = _name_tokens(full_name)
+    account_tokens = _name_tokens(verified_name)
+    if len(employee_tokens) < 2:
+        return verified_name, 'Enter at least two names. One name cannot create an employee account.'
+    if len(employee_tokens.intersection(account_tokens)) < 2:
+        return verified_name, (
+            f"Employee name must match the verified account holder name. "
+            f"Paystack returned: {verified_name}"
+        )
+
+    if submitted_holder and _name_tokens(submitted_holder) != account_tokens:
+        return verified_name, 'Account holder name must come from Paystack verification.'
+
+    return verified_name, None
 
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
@@ -89,13 +129,28 @@ def login_view(request):
             
         user = authenticate(request, username=username, password=password)
         
+        # Logic: If standard login fails, try login with Employee ID
+        if not user:
+            try:
+                employee = Employee.objects.get(employee_id=username)
+                user = authenticate(request, username=employee.user.username, password=password)
+            except (Employee.DoesNotExist, AttributeError):
+                pass
+
         if not user:
             logger.warning(f"Failed login attempt for {username} from {request.META.get('REMOTE_ADDR')}")
             return Response(
                 {'error': 'Invalid credentials'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-            
+
+        # Logic: Sacked/Terminated employees cannot log in
+        if not user.is_active:
+            return Response(
+                {'error': 'This account has been deactivated. Please contact administration.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         logger.info(f"Successful login for {username} from {request.META.get('REMOTE_ADDR')}")
             
         # This is where 500s often happen if SimpleJWT migrations aren't run
@@ -230,13 +285,30 @@ def register_view(request):
     
     # Employee validation fields
     if role in ['staff', 'guard']:
-        required_fields = ['salary', 'location', 'bank_name', 'account_number', 'account_holder']
+        required_fields = ['salary', 'location', 'bank_name', 'bank_code', 'account_number', 'account_holder']
         missing = [f for f in required_fields if not data.get(f)]
         if missing:
             return Response(
                 {'error': f'Missing required fields: {", ".join(missing)}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        employee_full_name = full_name or f"{first_name or ''} {last_name or ''}".strip()
+        name_error = _validate_full_name(employee_full_name)
+        if name_error:
+            return Response({'error': name_error, 'field': 'full_name'}, status=status.HTTP_400_BAD_REQUEST)
+        verified_holder, verification_error = _validate_bank_account_name(
+            employee_full_name,
+            account_number,
+            data.get('bank_code'),
+            data.get('account_holder')
+        )
+        if verification_error:
+            return Response(
+                {'error': verification_error, 'field': 'account_holder'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        data = data.copy()
+        data['account_holder'] = verified_holder
     
     try:
         with transaction.atomic():
@@ -417,6 +489,22 @@ def self_register_employee(request):
     if User.objects.filter(email__iexact=data['email']).exists():
         return Response({'error': 'Email already registered', 'field': 'email'}, status=status.HTTP_400_BAD_REQUEST)
 
+    name_error = _validate_full_name(data.get('full_name'))
+    if name_error:
+        return Response({'error': name_error, 'field': 'full_name'}, status=status.HTTP_400_BAD_REQUEST)
+
+    verified_holder, verification_error = _validate_bank_account_name(
+        data.get('full_name'),
+        data.get('account_number'),
+        data.get('bank_code'),
+        data.get('account_holder')
+    )
+    if verification_error:
+        return Response(
+            {'error': verification_error, 'field': 'account_holder'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     try:
         with transaction.atomic():
             name_parts = data['full_name'].split(None, 1)
@@ -443,8 +531,9 @@ def self_register_employee(request):
                 phone=data.get('phone', ''),
                 email=data['email'],
                 bank_name=data.get('bank_name', ''),
+                bank_code=data.get('bank_code', ''),
                 account_number=data.get('account_number', ''),
-                account_holder=data.get('account_holder', ''),
+                account_holder=verified_holder,
                 is_self_registered=True,
                 status='pending',
                 join_date=timezone.now().date()
@@ -452,6 +541,14 @@ def self_register_employee(request):
             employee.refresh_from_db()
             
         send_registration_notifications(employee, request)
+
+        logger.info(f"Self-signup {role_type} successful: {user.username} (ID: {employee.employee_id})")
+        return Response({
+            'message': 'Account created! Your registration is pending admin approval.',
+            'employee_id': employee.employee_id,
+            'username': user.username
+        }, status=status.HTTP_201_CREATED)
+
     except IntegrityError as e: # Add specific handling here
         logger.error(f"Integrity error during self-registration: {e}")
         if 'employee_id' in str(e):
@@ -474,12 +571,6 @@ def self_register_employee(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-        logger.info(f"Self-signup {role_type} successful: {user.username} (ID: {employee.employee_id})")
-        return Response({
-            'message': 'Account created! Your registration is pending admin approval.',
-            'employee_id': employee.employee_id,
-            'username': user.username
-        }, status=status.HTTP_201_CREATED)
     except Exception as e:
         logger.error(f"Self-registration error: {e}")
         return Response({'error': 'Registration failed. Please try again.'}, status=status.HTTP_400_BAD_REQUEST)

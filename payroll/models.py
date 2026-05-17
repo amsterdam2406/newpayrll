@@ -270,7 +270,7 @@ class Payment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='payments')
 
-    # Salary month marker (prevents double salary payments per employee per month)
+    # Salarymonth marker (prevents double salary payments per employee per month)
     # Format: YYYY-MM (e.g. 2026-05)
     payment_month = models.CharField(max_length=7, help_text='Format: YYYY-MM', null=True, blank=True)
 
