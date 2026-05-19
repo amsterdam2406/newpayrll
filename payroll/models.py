@@ -61,6 +61,7 @@ class Employee(models.Model):
         ('terminated', 'Terminated'),
         ('sacked', 'Sacked'),
         ('resigned', 'Resigned'),
+        ('pending', 'Pending'),
     ]
     
     id_sequence = models.PositiveIntegerField(editable=False, null=True, blank=True)
