@@ -1,6 +1,5 @@
 from django.core.management.base import BaseCommand
 from django.db import connection
-from django.core.management import call_command
 
 
 class Command(BaseCommand):
@@ -29,33 +28,43 @@ class Command(BaseCommand):
             return cursor.fetchone() is not None
 
     def handle(self, *args, **options):
-        # Add all missing columns from migrations 0007-0025
-        self.add_column_if_not_exists('employees', 'is_self_registered', 'BOOLEAN DEFAULT FALSE')
-        self.add_column_if_not_exists('payments', 'amount_paid', 'NUMERIC(10, 2) NULL')
-        self.add_column_if_not_exists('payments', 'is_partial', 'BOOLEAN DEFAULT FALSE')
-        self.add_column_if_not_exists('attendance', 'clock_method', 'VARCHAR(10) NULL')
-        self.add_column_if_not_exists('attendance', 'leave_start', 'DATE NULL')
-        self.add_column_if_not_exists('attendance', 'leave_end', 'DATE NULL')
-        self.add_column_if_not_exists('attendance', 'clock_in_photo', 'VARCHAR(100) NULL')
-        self.add_column_if_not_exists('attendance', 'clock_out_photo', 'VARCHAR(100) NULL')
-        self.add_column_if_not_exists('otp', 'attempt_count', 'INTEGER DEFAULT 0')
-        self.add_column_if_not_exists('otp', 'max_attempts', 'INTEGER DEFAULT 3')
-        self.add_column_if_not_exists('deductions', 'hr_approved', 'BOOLEAN DEFAULT FALSE')
-        self.add_column_if_not_exists('deductions', 'hr_approved_by_id', 'BIGINT NULL')
-        self.add_column_if_not_exists('payments', 'hr_approved', 'BOOLEAN DEFAULT FALSE')
-        self.add_column_if_not_exists('payments', 'hr_approved_by_id', 'BIGINT NULL')
-        self.add_column_if_not_exists('payments', 'paystack_transfer_code', 'VARCHAR(100) NULL')
-        self.add_column_if_not_exists('payments', 'payment_month', 'VARCHAR(7) NULL')
-        self.add_column_if_not_exists('companies', 'email', 'VARCHAR(254) NULL')
-        self.add_column_if_not_exists('companies', 'phone', 'VARCHAR(15) NULL')
-        self.add_column_if_not_exists('companies', 'status', "VARCHAR(15) DEFAULT 'active'")
-        self.add_column_if_not_exists('companies', 'termination_reason', 'TEXT NULL')
-        self.add_column_if_not_exists('companies', 'contract_start', 'DATE NULL')
-        self.add_column_if_not_exists('companies', 'contract_end', 'DATE NULL')
-        self.add_column_if_not_exists('users', 'is_request_admin', 'BOOLEAN DEFAULT FALSE')
-        
-        # Create missing tables
+        # Create missing tables FIRST (before adding columns to them)
         with connection.cursor() as cursor:
+            # otp table (from 0006)
+            if not self.table_exists('otps'):
+                self.stdout.write(self.style.WARNING('Creating otps table...'))
+                cursor.execute("""
+                    CREATE TABLE otps (
+                        id BIGSERIAL PRIMARY KEY,
+                        email VARCHAR(254) NOT NULL,
+                        code VARCHAR(6) NOT NULL,
+                        reference VARCHAR(100) NOT NULL,
+                        is_used BOOLEAN DEFAULT FALSE,
+                        expires_at TIMESTAMP NOT NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        attempt_count INTEGER DEFAULT 0,
+                        max_attempts INTEGER DEFAULT 3
+                    )
+                """)
+
+            # export_tokens table (from 0006)
+            if not self.table_exists('export_tokens'):
+                self.stdout.write(self.style.WARNING('Creating export_tokens table...'))
+                cursor.execute("""
+                    CREATE TABLE export_tokens (
+                        id BIGSERIAL PRIMARY KEY,
+                        token VARCHAR(64) NOT NULL UNIQUE,
+                        data_type VARCHAR(50) NOT NULL,
+                        filters JSONB DEFAULT '{}',
+                        expires_at TIMESTAMP NOT NULL,
+                        otp_code VARCHAR(6) NULL,
+                        is_2fa_verified BOOLEAN DEFAULT FALSE,
+                        is_used BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+                    )
+                """)
+
             # audit_logs table (from 0018)
             if not self.table_exists('audit_logs'):
                 self.stdout.write(self.style.WARNING('Creating audit_logs table...'))
@@ -71,7 +80,7 @@ class Command(BaseCommand):
                 """)
                 cursor.execute("CREATE INDEX audit_logs_timestamp_idx ON audit_logs(timestamp DESC)")
 
-            # employee_requests table (from 0016) - MUST exist before attachments
+            # employee_requests table (from 0016)
             if not self.table_exists('employee_requests'):
                 self.stdout.write(self.style.WARNING('Creating employee_requests table...'))
                 cursor.execute("""
@@ -106,9 +115,40 @@ class Command(BaseCommand):
                 else:
                     self.stdout.write(self.style.ERROR('Skipping employee_request_attachments - employee_requests table missing!'))
 
+        # Now add missing columns
+        self.add_column_if_not_exists('employees', 'is_self_registered', 'BOOLEAN DEFAULT FALSE')
+        self.add_column_if_not_exists('payments', 'amount_paid', 'NUMERIC(10, 2) NULL')
+        self.add_column_if_not_exists('payments', 'is_partial', 'BOOLEAN DEFAULT FALSE')
+        self.add_column_if_not_exists('attendance', 'clock_method', 'VARCHAR(10) NULL')
+        self.add_column_if_not_exists('attendance', 'leave_start', 'DATE NULL')
+        self.add_column_if_not_exists('attendance', 'leave_end', 'DATE NULL')
+        self.add_column_if_not_exists('attendance', 'clock_in_photo', 'VARCHAR(100) NULL')
+        self.add_column_if_not_exists('attendance', 'clock_out_photo', 'VARCHAR(100) NULL')
+        self.add_column_if_not_exists('otp', 'attempt_count', 'INTEGER DEFAULT 0')
+        self.add_column_if_not_exists('otp', 'max_attempts', 'INTEGER DEFAULT 3')
+        self.add_column_if_not_exists('deductions', 'hr_approved', 'BOOLEAN DEFAULT FALSE')
+        self.add_column_if_not_exists('deductions', 'hr_approved_by_id', 'BIGINT NULL')
+        self.add_column_if_not_exists('payments', 'hr_approved', 'BOOLEAN DEFAULT FALSE')
+        self.add_column_if_not_exists('payments', 'hr_approved_by_id', 'BIGINT NULL')
+        self.add_column_if_not_exists('payments', 'paystack_transfer_code', 'VARCHAR(100) NULL')
+        self.add_column_if_not_exists('payments', 'payment_month', 'VARCHAR(7) NULL')
+        self.add_column_if_not_exists('companies', 'email', 'VARCHAR(254) NULL')
+        self.add_column_if_not_exists('companies', 'phone', 'VARCHAR(15) NULL')
+        self.add_column_if_not_exists('companies', 'status', "VARCHAR(15) DEFAULT 'active'")
+        self.add_column_if_not_exists('companies', 'termination_reason', 'TEXT NULL')
+        self.add_column_if_not_exists('companies', 'contract_start', 'DATE NULL')
+        self.add_column_if_not_exists('companies', 'contract_end', 'DATE NULL')
+        self.add_column_if_not_exists('users', 'is_request_admin', 'BOOLEAN DEFAULT FALSE')
+        
         # Fix migration history - mark all as applied
         with connection.cursor() as cursor:
             migrations_to_ensure = [
+                '0001_initial',
+                '0002_remove_user_employee_id',
+                '0003_alter_attendance_unique_together_and_more',
+                '0004_user_employee_id_alter_user_role',
+                '0005_user_is_company_admin_user_is_deduction_admin_and_more',
+                '0006_otp_exporttoken',
                 '0007_attendance_clock_in_timestamp_and_more',
                 '0008_otp_attempt_count_otp_max_attempts_alter_otp_code',
                 '0009_alter_deduction_status',
