@@ -137,6 +137,14 @@ def login_view(request):
                 user = authenticate(request, username=employee.user.username, password=password)
             except (Employee.DoesNotExist, AttributeError):
                 pass
+            except Exception as e:
+                # If the deployed DB schema is behind migrations, Employee queries may fail
+                # e.g. "column employees.is_self_registered does not exist".
+                logger.error(f"Employee lookup failed during login for {username}: {e}")
+                return Response(
+                    {'error': 'Server database is not up to date (run migrations).'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
         if not user:
             logger.warning(f"Failed login attempt for {username} from {request.META.get('REMOTE_ADDR')}")
