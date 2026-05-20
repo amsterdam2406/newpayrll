@@ -36,6 +36,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+import json
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 try:
@@ -270,61 +271,57 @@ def send_payment_receipt_email(payment):
 # ─────────────────────────────────────────
 
 @csrf_exempt
-@api_view(['POST'])
-@permission_classes([AllowAny])
 def paystack_webhook(request):
     """
     Handle Paystack webhook events.
-    Must be registered in Paystack dashboard settings.
-    Paystack sends POST requests here for transfer.success,
-    transfer.failed, transfer.reversed events.
+    Uses Django's raw HttpRequest, NOT DRF's Request wrapper.
+    This avoids RawPostDataException when accessing request.body.
     """
+    # CRITICAL: Read body ONCE and store it
+    raw_body = request.body
+    
     paystack_secret = getattr(settings, 'PAYSTACK_SECRET_KEY', '')
     signature = request.headers.get('x-paystack-signature', '')
 
-    # Verify webhook signature to confirm it's from Paystack
-    logger.debug(f"Received Paystack webhook. Event: {request.data.get('event')}, Reference: {request.data.get('data', {}).get('reference')}")
+    # Verify webhook signature
     computed = hmac.new(
         paystack_secret.encode('utf-8'),
-        request.body,
+        raw_body,
         hashlib.sha512
     ).hexdigest()
 
     if not hmac.compare_digest(computed, signature):
-        logger.error(f"Invalid Paystack webhook signature received. Computed: {computed}, Received: {signature}")
-        logger.warning("Invalid Paystack webhook signature received")
+        logger.error(f"Invalid Paystack webhook signature. Computed: {computed[:20]}..., Received: {signature[:20]}...")
         return HttpResponse(status=400)
 
     try:
-        payload = request.data
+        # Parse JSON manually from the stored raw body
+        payload = json.loads(raw_body)
         event = payload.get('event')
         data = payload.get('data', {})
         reference = data.get('reference')
         
-        logger.info(f"Paystack webhook received: {event} for reference={reference}")
+        logger.info(f"Paystack webhook: {event} | ref={reference}")
 
         if event == 'transfer.success':
             _handle_transfer_success(data)
-
         elif event == 'transfer.failed':
             _handle_transfer_failed(data)
-
         elif event == 'transfer.reversed':
             _handle_transfer_reversed(data)
-
         elif event == 'charge.success':
-            # Handles collection payments if you use initialize_transaction
             _handle_charge_success(data)
-
         else:
-            logger.info(f"Unhandled Paystack webhook event: {event}")
+            logger.info(f"Unhandled Paystack event: {event}")
 
-        # Always return 200 to Paystack so it doesn't retry
         return HttpResponse(status=200)
 
-    except Exception as e: # This catches errors in processing, but Paystack still gets 200
+    except json.JSONDecodeError as e:
+        logger.error(f"Webhook JSON parse error: {e}")
+        return HttpResponse(status=400)
+    except Exception as e:
         logger.error(f"Webhook processing error: {e}")
-        # Still return 200 so Paystack doesn't keep retrying
+        # Return 200 so Paystack doesn't retry and spam you
         return HttpResponse(status=200)
 
 
@@ -1412,7 +1409,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             )
 
             # Since Internal OTP flow is removed, trigger Paystack immediately if no HR approval is required
-            if initial_status == 'pending':
+            if initial_status in ['pending', 'pending_hr']:
                 paystack = PaystackAPI()
                 
                 # 1. Ensure Paystack Recipient exists for this employee

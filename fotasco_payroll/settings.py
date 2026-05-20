@@ -389,6 +389,9 @@ if not DEBUG:
     SESSION_COOKIE_SAMESITE = 'Lax'
     CSRF_COOKIE_SAMESITE = 'Lax'
     SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+    SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+    SESSION_COOKIE_AGE = 1209600  # 2 weeks
+    SESSION_SAVE_EVERY_REQUEST = True
 
 # Ensure NO other settings starting with "CSP_" exist in this file.
 # Content Security Policy
@@ -427,7 +430,6 @@ CONTENT_SECURITY_POLICY = {
 # CELERY_RESULT_BACKEND = 'cache+memory://'
 # # Only True in dev/testing, False in production
 # # CELERY_TASK_ALWAYS_EAGER = DEBUG  # Run tasks synchronously when DEBUG=True
-
 # CELERY_ACCEPT_CONTENT = ['json']
 # CELERY_TASK_SERIALIZER = 'json'
 # CELERY_RESULT_SERIALIZER = 'json'
@@ -470,7 +472,7 @@ LOGGING = {
             'level': LOG_LEVEL,
             'formatter': 'simple',
         },
-},
+    },
 
     'root': {
         'handlers': ['console'],
@@ -505,6 +507,11 @@ LOGGING = {
         'payroll': {
             'handlers': ['console'],
             'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'payroll.webhook': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
             'propagate': False,
         },
     },

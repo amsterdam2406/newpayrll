@@ -18,6 +18,8 @@ router.register(r'download-logs', views.DownloadLogViewSet, basename='download-l
 urlpatterns = [
     path('', views.frontend, name='frontend'),
     path('api/', include(router.urls)),
+    
+    # Auth
     path('login/', auth_views.login_view, name='login'),
     path('logout/', auth_views.logout_view, name='logout'),
     path('token/refresh/', auth_views.CookieTokenRefreshView.as_view(), name='token_refresh'),
@@ -26,14 +28,16 @@ urlpatterns = [
     path('self-register/', auth_views.self_register_employee, name='self_register'),
     path('request-reset/', auth_views.request_password_reset, name='request_reset'),
     path('reset-password/confirm/<uidb64>/<token>/', auth_views.reset_password_confirm, name='password_reset_confirm'),
+    
+    # Paystack
     path('paystack/banks/', views.paystack_banks, name='paystack_banks'),
     path('paystack/verify-account/', views.paystack_verify_account, name='paystack_verify_account'),
     path('paystack/clear-cache/', views.clear_paystack_cache, name='clear_paystack_cache'),
-    # Support both URL paths for webhook (fix the mismatch)
-    # Add this alongside your existing paystack/webhook/ path
-path('api/payments/webhook/', views.paystack_webhook, name='paystack_webhook_api'),
+    
+    # WEBHOOK: Only ONE endpoint. Paystack should point here:
     path('paystack/webhook/', views.paystack_webhook, name='paystack_webhook'),
-    path('api/payments/webhook/', views.paystack_webhook, name='paystack_webhook_alt'),
+    
+    # Other
     path('verify-password/', auth_views.verify_password, name='verify_password'),
     path('change-password/', auth_views.change_password, name='change_password'),
     path('next-employee-id/', auth_views.get_next_employee_id, name='next_employee_id'),
