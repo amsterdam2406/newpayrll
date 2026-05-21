@@ -7,8 +7,8 @@ from django.db.models import ProtectedError, RestrictedError
 from .models import (
     User, Employee, Attendance, Deduction, 
     Payment, Company, SackedEmployee, Notification, 
-    OTP, ExportToken, EmployeeRequest, EmployeeRequestAttachment,
-    DownloadLog, AuditLog
+    OTP, ExportToken, EmployeeRequestNew, EmployeeRequestAttachmentNew,
+    DownloadLogNew, AuditLogNew
 )
 
 # ─────────────────────────────────────────────
@@ -256,7 +256,7 @@ class ExportTokenAdmin(admin.ModelAdmin):
 # ─────────────────────────────────────────────
 # EMPLOYEE REQUEST ADMIN
 # ─────────────────────────────────────────────
-@admin.register(EmployeeRequest)
+@admin.register(EmployeeRequestNew)
 class EmployeeRequestAdmin(admin.ModelAdmin):
     list_display = ['employee', 'request_type', 'amount', 'status', 'created_at']
     list_filter = ['status', 'request_type']
@@ -267,7 +267,7 @@ class EmployeeRequestAdmin(admin.ModelAdmin):
 # ─────────────────────────────────────────────
 # EMPLOYEE REQUEST ATTACHMENT ADMIN
 # ─────────────────────────────────────────────
-@admin.register(EmployeeRequestAttachment)
+@admin.register(EmployeeRequestAttachmentNew)
 class EmployeeRequestAttachmentAdmin(admin.ModelAdmin):
     list_display = ['request', 'file_type', 'file']
     list_filter = ['file_type']
@@ -276,7 +276,7 @@ class EmployeeRequestAttachmentAdmin(admin.ModelAdmin):
 # ─────────────────────────────────────────────
 # DOWNLOAD LOG ADMIN
 # ─────────────────────────────────────────────
-@admin.register(DownloadLog)
+@admin.register(DownloadLogNew)
 class DownloadLogAdmin(admin.ModelAdmin):
     list_display = ['user', 'employee', 'doc_type', 'reference', 'ip_address', 'timestamp']
     list_filter = ['doc_type']
@@ -287,7 +287,7 @@ class DownloadLogAdmin(admin.ModelAdmin):
 # ─────────────────────────────────────────────
 # AUDIT LOG ADMIN
 # ─────────────────────────────────────────────
-@admin.register(AuditLog)
+@admin.register(AuditLogNew)
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ['user', 'action', 'ip_address', 'timestamp']
     search_fields = ['user__username', 'action']

@@ -56,7 +56,8 @@ except ImportError:
     Spacer = None
 from .models import (
     Employee, Attendance, Deduction, Payment,
-    Company, SackedEmployee, Notification, OTP, ExportToken, EmployeeRequest, EmployeeRequestAttachment, DownloadLog
+    Company, SackedEmployee, Notification, OTP, ExportToken, EmployeeRequestNew,
+    EmployeeRequestAttachmentNew, DownloadLogNew
 )
 from . import auth_views
 from .serializers import (
@@ -85,7 +86,7 @@ class DownloadLogSerializer(serializers.ModelSerializer):
     user_username = serializers.ReadOnlyField(source='user.username')
 
     class Meta:
-        model = DownloadLog
+        model = DownloadLogNew
         fields = [
             'id', 'user', 'user_username', 'employee', 'employee_name', 
             'employee_id', 'doc_type', 'reference', 'ip_address', 'timestamp'
@@ -914,7 +915,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 ])
 
             # Log the bulk employee export
-            DownloadLog.objects.create(
+            DownloadLogNew.objects.create(
                 user=request.user,
                 employee=None,
                 doc_type='employee_csv',
@@ -2042,7 +2043,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             elements.append(ts)
             
             # Log the download
-            DownloadLog.objects.create(
+            DownloadLogNew.objects.create(
                 user=request.user,
                 employee=employee,
                 doc_type='payslip',
@@ -2094,7 +2095,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             employee = payment.employee
             
             # Log the download
-            DownloadLog.objects.create(
+            DownloadLogNew.objects.create(
                 user=request.user,
                 employee=employee,
                 doc_type='receipt',
@@ -2168,7 +2169,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
                 ])
 
             # Log the payment history export
-            DownloadLog.objects.create(
+            DownloadLogNew.objects.create(
                 user=request.user,
                 employee=None,
                 doc_type='payment_csv',
@@ -2439,7 +2440,7 @@ class CompanyViewSet(viewsets.ModelViewSet):
 # ─────────────────────────────────────────
 
 class EmployeeRequestViewSet(viewsets.ModelViewSet):
-    queryset = EmployeeRequest.objects.all().order_by('-created_at')
+    queryset = EmployeeRequestNew.objects.all().order_by('-created_at')
     serializer_class = EmployeeRequestSerializer
     filterset_fields = ['employee', 'request_type', 'status']
 
@@ -2459,12 +2460,12 @@ class EmployeeRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_superuser or getattr(user, 'is_request_admin', False):
-            return EmployeeRequest.objects.all().order_by('-created_at')
+            return EmployeeRequestNew.objects.all().order_by('-created_at')
         try:
             employee = Employee.objects.get(user=user)
-            return EmployeeRequest.objects.filter(employee=employee).order_by('-created_at')
+            return EmployeeRequestNew.objects.filter(employee=employee).order_by('-created_at')
         except Employee.DoesNotExist:
-            return EmployeeRequest.objects.none()
+            return EmployeeRequestNew.objects.none()
 
     def perform_create(self, serializer):
         # Ensure employee is linked to the requesting user
@@ -2480,11 +2481,11 @@ class EmployeeRequestViewSet(viewsets.ModelViewSet):
         
         # Handle multiple proof photos
         for f in self.request.FILES.getlist('proof_photos'):
-            EmployeeRequestAttachment.objects.create(request=req, file=f, file_type='proof')
+            EmployeeRequestAttachmentNew.objects.create(request=req, file=f, file_type='proof')
             
         # Handle multiple receipt files
         for f in self.request.FILES.getlist('receipt_files'):
-            EmployeeRequestAttachment.objects.create(request=req, file=f, file_type='receipt')
+            EmployeeRequestAttachmentNew.objects.create(request=req, file=f, file_type='receipt')
 
         Notification.objects.create(
             user=self.request.user,
@@ -2570,7 +2571,7 @@ class DownloadLogViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for administrators to monitor document download history.
     """
-    queryset = DownloadLog.objects.all().order_by('-timestamp')
+    queryset = DownloadLogNew.objects.all().order_by('-timestamp')
     serializer_class = DownloadLogSerializer
     permission_classes = [IsAdmin]
     filterset_fields = ['doc_type', 'employee']

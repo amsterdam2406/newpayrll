@@ -411,7 +411,7 @@ class Notification(models.Model):
     def __str__(self):
         return f"{self.type}: {self.message[:50]}"
 
-class EmployeeRequest(models.Model):
+class EmployeeRequestNew(models.Model):
     """Model for Employee Requests (Loans, Advances, Company Usage)"""
     REQUEST_TYPES = [
         ('salary_advance', 'Salary Advance'),
@@ -440,21 +440,21 @@ class EmployeeRequest(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'employee_requests'
+        db_table = 'employee_requests_new'
         ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.employee.name} - {self.request_type} ({self.status})"
 
-class EmployeeRequestAttachment(models.Model):
+class EmployeeRequestAttachmentNew(models.Model):
     """Model to support multiple attachments for a single request"""
     FILE_TYPE_CHOICES = [('proof', 'Proof'), ('receipt', 'Receipt')]
-    request = models.ForeignKey(EmployeeRequest, on_delete=models.CASCADE, related_name='attachments')
+    request = models.ForeignKey(EmployeeRequestNew, on_delete=models.CASCADE, related_name='attachments')
     file = models.FileField(upload_to='requests/attachments/%Y/%m/')
     file_type = models.CharField(max_length=10, choices=FILE_TYPE_CHOICES)
     
     class Meta:
-        db_table = 'employee_request_attachments'
+        db_table = 'employee_request_attachments_new'
 
 class OTP(models.Model):
     """OTP Model (legacy: may still be used for some flows).
@@ -507,7 +507,7 @@ class ExportToken(models.Model):
     def is_expired(self):
         return timezone.now() > self.expires_at
 
-class DownloadLog(models.Model):
+class DownloadLogNew(models.Model):
     """Log of sensitive document downloads"""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='download_logs', null=True, blank=True)
@@ -517,11 +517,11 @@ class DownloadLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'download_logs'
+        db_table = 'download_logs_new'
         ordering = ['-timestamp']
 
 
-class AuditLog(models.Model):
+class AuditLogNew(models.Model):
     """Model to track administrative and security actions"""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     action = models.CharField(max_length=255)
@@ -530,7 +530,7 @@ class AuditLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'audit_logs'
+        db_table = 'audit_logs_new'
         ordering = ['-timestamp']
 
     def __str__(self):
